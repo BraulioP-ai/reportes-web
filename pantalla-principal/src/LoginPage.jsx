@@ -2,20 +2,40 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Lock, User } from "lucide-react";
 
+const API_URL = "http://localhost:3000";
+
 export default function LoginPage({ onLogin }) {
   const [usuario, setUsuario] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    setError("");
 
-    // Validación temporal (puedes conectar después con tu API real)
-    if (usuario === "guardia" && password === "1234") {
-      setError("");
-      onLogin?.(usuario);
-    } else {
-      setError("Usuario o contraseña incorrectos");
+    if (!usuario || !password) {
+      setError("Ingrese usuario y contraseña");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_URL}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nombre: usuario, contrasena: password }),
+      });
+
+      if (!res.ok) throw new Error("Usuario o contraseña incorrectos");
+
+      const data = await res.json();
+      // data = { UsuarioID, NombreUsuario, PermisoID }
+      onLogin({ 
+        id: data.UsuarioID, 
+        nombre: data.NombreUsuario,
+        permisoId: data.PermisoID  // ← AGREGADO
+      });
+    } catch (e) {
+      setError(e.message);
     }
   };
 
