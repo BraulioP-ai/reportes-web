@@ -10,7 +10,7 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: "http://localhost:5174",
     methods: ["GET", "POST", "PUT", "DELETE"],
   })
 );
@@ -65,7 +65,7 @@ app.post("/login", (req, res) => {
 });
 
 // ==============================
-// OBTENER REGISTROS DE ACCESO
+// OBTENER REGISTROS DE ACCESO (CON GUARDIA)
 // ==============================
 app.get("/registros", (req, res) => {
   const query = `
@@ -76,12 +76,14 @@ app.get("/registros", (req, res) => {
       r.EstadoAutorizacion,
       r.ModoAcceso,
       r.UsuarioSistemaID,
+      u.NombreUsuario AS GuardiaNombre,
       CONCAT(e.Nombre, ' ', e.ApellidoPaterno, ' ', e.ApellidoMaterno) AS NombreCompleto,
       v.Marca,
       v.Modelo
     FROM RegistrosAcceso r
     LEFT JOIN Vehiculos v ON r.Placa = v.Placa
     LEFT JOIN Empleados e ON v.EmpleadoID = e.EmpleadoID
+    LEFT JOIN UsuariosSistema u ON r.UsuarioSistemaID = u.UsuarioID
     ORDER BY r.FechaHora DESC;
   `;
 
@@ -93,7 +95,6 @@ app.get("/registros", (req, res) => {
     res.json(results);
   });
 });
-
 // ==============================
 // REGISTRO MANUAL DE ACCESO
 // ==============================
@@ -179,4 +180,201 @@ app.post("/registros", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${PORT}`);
+});
+
+// ==============================
+// OBTENER LISTA DE GUARDIAS
+// ==============================
+app.get("/guardias", (req, res) => {
+  const query = `
+    SELECT 
+      u.UsuarioID,
+      u.NombreUsuario,
+      p.NombrePermiso AS Rol,
+      COUNT(r.RegistroID) AS TotalAccesosManual
+    FROM UsuariosSistema u
+    INNER JOIN PermisosSistema p ON u.PermisoID = p.PermisoID
+    LEFT JOIN RegistrosAcceso r ON u.UsuarioID = r.UsuarioSistemaID AND r.ModoAcceso = 'MANUAL'
+    WHERE u.PermisoID = 3 AND u.Estatus = 1
+    GROUP BY u.UsuarioID, u.NombreUsuario, p.NombrePermiso
+    ORDER BY u.NombreUsuario;
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("❌ Error obteniendo guardias:", err);
+      return res.status(500).json({ error: "Error al obtener guardias" });
+    }
+    
+    const guardias = results.map(g => ({
+      id: g.UsuarioID,
+      nombre: g.NombreUsuario,
+      correo: `${g.NombreUsuario.toLowerCase()}@empresa.com`,
+      rol: g.Rol,
+      accesosManual: Array(g.TotalAccesosManual).fill({})
+    }));
+    
+    res.json(guardias);
+  });
+});
+
+// ==============================
+// OBTENER TODOS LOS VEHÍCULOS
+// ==============================
+app.get("/vehiculos", (req, res) => {
+  const query = `
+    SELECT 
+      v.Placa,
+      v.Marca,
+      v.Modelo,
+      v.TipoVehiculo,
+      v.EmpleadoID,
+      v.EsAutorizado,
+      v.FechaVencimiento,
+      CONCAT(e.Nombre, ' ', e.ApellidoPaterno, ' ', e.ApellidoMaterno) AS NombrePropietario,
+      e.Puesto AS Departamento
+    FROM Vehiculos v
+    LEFT JOIN Empleados e ON v.EmpleadoID = e.EmpleadoID
+    ORDER BY v.Placa;
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("❌ Error obteniendo vehículos:", err);
+      return res.status(500).json({ error: "Error al obtener vehículos" });
+    }
+    res.json(results);
+  });
+});
+
+// ==============================
+// OBTENER EMPLEADOS (para el dropdown)
+// ==============================
+app.get("/empleados", (req, res) => {
+  const query = `
+    SELECT 
+      EmpleadoID,
+      CONCAT(Nombre, ' ', ApellidoPaterno, ' ', ApellidoMaterno) AS NombreCompleto,
+      Puesto AS Departamento
+    FROM Empleados
+    WHERE Estatus = 1
+    ORDER BY Nombre;
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error("❌ Error obteniendo empleados:", err);
+      return res.status(500).json({ error: "Error al obtener empleados" });
+    }
+    res.json(results);
+  });
+});
+
+// ==============================
+// DAR DE ALTA UN VEHÍCULO
+// ==============================
+app.post("/vehiculos", (req, res) => {
+  const { placa, marca, modelo, empleadoId, esAutorizado } = req.body;
+
+  if (!placa || !marca || !modelo || !empleadoId) {
+    return res.status(400).json({ error: "Faltan datos requeridos" });
+  }
+
+  // Validar formato de placa (AAA000A)
+  const placaRegex = /^[A-Z]{3}\d{3}[A-Z]$/;
+  if (!placaRegex.test(placa.toUpperCase())) {
+    return res.status(400).json({ error: "Formato de placa inválido. Use AAA000A" });
+  }
+
+  const query = `
+    INSERT INTO Vehiculos (Placa, Marca, Modelo, EmpleadoID, EsAutorizado)
+    VALUES (?, ?, ?, ?, ?);
+  `;
+
+  db.query(query, [placa.toUpperCase(), marca, modelo, empleadoId, esAutorizado ? 1 : 0], (err, result) => {
+    if (err) {
+      if (err.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({ error: "La placa ya está registrada" });
+      }
+      console.error("❌ Error al registrar vehículo:", err);
+      return res.status(500).json({ error: "Error al registrar vehículo" });
+    }
+    res.json({ message: "Vehículo registrado exitosamente", placa: placa.toUpperCase() });
+  });
+});
+
+// ==============================
+// DAR DE BAJA UN VEHÍCULO (DELETE)
+// ==============================
+app.delete("/vehiculos/:placa", (req, res) => {
+  const { placa } = req.params;
+
+  const query = "DELETE FROM Vehiculos WHERE Placa = ?";
+
+  db.query(query, [placa], (err, result) => {
+    if (err) {
+      console.error("❌ Error al eliminar vehículo:", err);
+      return res.status(500).json({ error: "Error al eliminar vehículo" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Vehículo no encontrado" });
+    }
+
+    res.json({ message: "Vehículo dado de baja exitosamente" });
+  });
+});
+
+// ==============================
+// ACTUALIZAR VEHÍCULO
+// ==============================
+app.put("/vehiculos/:placa", (req, res) => {
+  const { placa } = req.params;
+  const { marca, modelo, empleadoId, esAutorizado } = req.body;
+
+  if (!marca || !modelo || !empleadoId) {
+    return res.status(400).json({ error: "Faltan datos requeridos" });
+  }
+
+  const query = `
+    UPDATE Vehiculos 
+    SET Marca = ?, Modelo = ?, EmpleadoID = ?, EsAutorizado = ?
+    WHERE Placa = ?;
+  `;
+
+  db.query(query, [marca, modelo, empleadoId, esAutorizado ? 1 : 0, placa], (err, result) => {
+    if (err) {
+      console.error("❌ Error al actualizar vehículo:", err);
+      return res.status(500).json({ error: "Error al actualizar vehículo" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Vehículo no encontrado" });
+    }
+
+    res.json({ message: "Vehículo actualizado exitosamente" });
+  });
+});
+
+// ==============================
+// CAMBIAR ESTADO DE AUTORIZACIÓN
+// ==============================
+app.patch("/vehiculos/:placa/autorizacion", (req, res) => {
+  const { placa } = req.params;
+  const { esAutorizado } = req.body;
+
+  const query = "UPDATE Vehiculos SET EsAutorizado = ? WHERE Placa = ?";
+
+  db.query(query, [esAutorizado ? 1 : 0, placa], (err, result) => {
+    if (err) {
+      console.error("❌ Error al cambiar autorización:", err);
+      return res.status(500).json({ error: "Error al cambiar autorización" });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Vehículo no encontrado" });
+    }
+
+    res.json({ message: "Autorización actualizada exitosamente" });
+  });
 });
